@@ -82,6 +82,11 @@ async def retrieve_context(
     settings = get_settings()
     if not settings.rag_enabled or not query.strip():
         return []
+    has_documents = await db.scalar(
+        select(DocumentChunk.id).where(DocumentChunk.user_id == user_id).limit(1)
+    )
+    if has_documents is None:
+        return []
     vector = (await ollama.embed([query]))[0]
     distance = DocumentChunk.embedding.cosine_distance(vector).label("distance")
     rows = await db.execute(

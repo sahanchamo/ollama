@@ -35,8 +35,18 @@ class OllamaService:
             "/api/embed",
             json={"model": settings.rag_embedding_model, "input": inputs, "truncate": True},
         )
-        response.raise_for_status()
-        embeddings = response.json().get("embeddings", [])
+        if response.status_code == 404:
+            # Ollama versions before the batch /api/embed endpoint expose the legacy single-prompt endpoint.
+            embeddings = []
+            for text in inputs:
+                legacy_response = await self.client.post(
+                    "/api/embeddings", json={"model": settings.rag_embedding_model, "prompt": text}
+                )
+                legacy_response.raise_for_status()
+                embeddings.append(legacy_response.json()["embedding"])
+        else:
+            response.raise_for_status()
+            embeddings = response.json().get("embeddings", [])
         if len(embeddings) != len(inputs):
             raise RuntimeError("Embedding service returned an unexpected number of vectors")
         if any(len(vector) != settings.rag_embedding_dimensions for vector in embeddings):
