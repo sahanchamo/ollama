@@ -57,7 +57,7 @@ AdminUser = Annotated[User, Depends(require_admin)]
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "user": set(),
     "analyst": {"analytics.read"},
-    "operator": {"analytics.read", "keys.manage", "users.manage"},
+    "operator": {"analytics.read", "keys.manage", "users.manage", "tools.run"},
     "admin": {"*"},
 }
 

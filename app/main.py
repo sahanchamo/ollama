@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes import admin, auth, chat, conversations, health, knowledge, usage
+from app.api.routes import admin, auth, chat, conversations, health, knowledge, tools, usage
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.models import Base, User
@@ -94,4 +94,5 @@ app.include_router(chat.router, prefix=settings.api_v1_prefix)
 app.include_router(conversations.router, prefix=settings.api_v1_prefix)
 app.include_router(usage.router, prefix=settings.api_v1_prefix)
 app.include_router(knowledge.router, prefix=settings.api_v1_prefix)
+app.include_router(tools.router, prefix=settings.api_v1_prefix)
 app.include_router(admin.router, prefix=settings.api_v1_prefix)
