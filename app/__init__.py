@@ -1,0 +1,2 @@
+"""Ollama Gateway application."""
+
