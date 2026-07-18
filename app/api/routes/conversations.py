@@ -24,6 +24,7 @@ from app.schemas.chat import (
 from app.services.rate_limit import limit_request
 from app.services.rag import build_rag_instruction, retrieve_context
 from app.services.quota import enforce_quota
+from app.services.domain_lookup import live_domain_context
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -189,8 +190,10 @@ async def send_message(
     except (httpx.HTTPError, RuntimeError) as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Knowledge retrieval unavailable: {exc}") from exc
     rag_instruction = build_rag_instruction(context)
-    if rag_instruction:
-        messages.insert(0, ChatMessage(role="system", content=rag_instruction))
+    tool_instruction = await live_domain_context(payload.content)
+    system_context = "\n\n".join(item for item in (rag_instruction, tool_instruction) if item)
+    if system_context:
+        messages.insert(0, ChatMessage(role="system", content=system_context))
     ollama_request = ChatRequest(
         model=conversation.model, messages=messages, temperature=payload.temperature, stream=True
     )

@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import get_settings
 from app.db.models import ChatAudit, UsageEvent
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatMessage, ChatRequest
 from app.services.rate_limit import limit_request
 from app.services.quota import enforce_quota
+from app.services.domain_lookup import live_domain_context
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 log = structlog.get_logger()
@@ -57,6 +58,14 @@ async def chat(
     if prompt_size(payload) > get_settings().max_prompt_chars:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Prompt exceeds configured limit")
     await enforce_quota(db, user.id)
+    latest_user_message = next((message.content for message in reversed(payload.messages) if message.role == "user"), "")
+    tool_instruction = await live_domain_context(latest_user_message)
+    if tool_instruction:
+        existing_system = next((message for message in payload.messages if message.role == "system"), None)
+        if existing_system:
+            existing_system.content = f"{existing_system.content}\n\n{tool_instruction}"
+        else:
+            payload.messages.insert(0, ChatMessage(role="system", content=tool_instruction))
     try:
         if payload.stream:
             await audit(db, user.id, payload, "streaming")

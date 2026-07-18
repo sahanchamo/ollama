@@ -9,6 +9,11 @@ DOMAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 RECORD_TYPES = ("A", "AAAA", "NS", "MX", "TXT")
+DOMAIN_IN_TEXT = re.compile(r"(?<![a-z0-9-])(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?![a-z0-9-])", re.IGNORECASE)
+LOOKUP_INTENT = re.compile(
+    r"\b(host(?:ing|ed)?|provider|dns|name\s*server|nameserver|mx\s*record|a\s*record|ip\s*address|who\s+hosts|domain\s+lookup)\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_domain(value: str) -> str:
@@ -54,3 +59,24 @@ async def lookup_domain(value: str) -> tuple[str, dict[str, list[str]], str | No
     records = await asyncio.to_thread(_lookup, domain)
     hint, scope = provider_hint(records)
     return domain, records, hint, scope
+
+
+async def live_domain_context(question: str) -> str | None:
+    """Return limited public DNS context only when a user explicitly asks for it."""
+    if not LOOKUP_INTENT.search(question):
+        return None
+    match = DOMAIN_IN_TEXT.search(question)
+    if match is None:
+        return None
+    try:
+        domain, records, hint, scope = await lookup_domain(match.group(0))
+    except ValueError:
+        return None
+    populated = [f"{record_type}: {', '.join(values)}" for record_type, values in records.items() if values]
+    details = "\n".join(populated) or "No public DNS records returned."
+    provider = hint or "No provider could be identified from the public DNS records."
+    caveat = scope or "DNS records do not necessarily identify the origin hosting provider."
+    return (
+        "LIVE DOMAIN LOOKUP (use this as current factual context; do not claim more than it proves):\n"
+        f"Domain: {domain}\n{details}\nProvider hint: {provider}\nImportant: {caveat}"
+    )
