@@ -23,6 +23,7 @@ from app.schemas.chat import (
 )
 from app.services.rate_limit import limit_request
 from app.services.rag import build_rag_instruction, retrieve_context
+from app.services.quota import enforce_quota
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -169,6 +170,7 @@ async def send_message(
 ):
     if len(payload.content) > get_settings().max_prompt_chars:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Message exceeds configured limit")
+    await enforce_quota(db, user.id)
     conversation = await owned_conversation(db, conversation_id, user.id)
     user_message = Message(conversation_id=conversation.id, role="user", content=payload.content)
     db.add(user_message)

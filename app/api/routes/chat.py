@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.db.models import ChatAudit, UsageEvent
 from app.schemas.chat import ChatRequest
 from app.services.rate_limit import limit_request
+from app.services.quota import enforce_quota
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 log = structlog.get_logger()
@@ -55,6 +56,7 @@ async def chat(
 ):
     if prompt_size(payload) > get_settings().max_prompt_chars:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Prompt exceeds configured limit")
+    await enforce_quota(db, user.id)
     try:
         if payload.stream:
             await audit(db, user.id, payload, "streaming")

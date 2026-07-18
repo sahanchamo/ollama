@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -47,3 +47,55 @@ class AdminOverview(BaseModel):
     output_tokens: int
     total_tokens: int
     users: list[AdminUserUsage]
+
+
+class AdminDailyUsage(BaseModel):
+    day: date
+    request_count: int
+    input_tokens: int
+    output_tokens: int
+
+
+class AdminModelUsage(BaseModel):
+    model: str
+    request_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    average_duration_ms: float
+
+
+class AdminRecentUsage(BaseModel):
+    id: UUID
+    email: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    total_duration_ns: int
+    status: str
+    created_at: datetime
+
+
+class AdminAnalytics(BaseModel):
+    days: int
+    active_key_count: int
+    revoked_key_count: int
+    daily: list[AdminDailyUsage]
+    models: list[AdminModelUsage]
+    recent: list[AdminRecentUsage]
+
+
+class AdminUserUpdate(BaseModel):
+    is_active: bool
+
+
+class AdminQuotaUpdate(BaseModel):
+    monthly_token_limit: int | None = Field(default=None, ge=1_000, le=100_000_000)
+
+
+class AdminUserQuota(BaseModel):
+    user_id: UUID
+    email: str
+    monthly_token_limit: int | None
+    monthly_tokens_used: int
+    remaining_tokens: int | None

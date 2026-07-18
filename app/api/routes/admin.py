@@ -1,13 +1,17 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select, update
 
 from app.api.deps import AdminUser, DbSession
 from app.core.security import create_api_key
-from app.db.models import ApiKey, UsageEvent, User
-from app.schemas.admin import AdminApiKeyCreate, AdminOverview, AdminUserUsage, ApiKeyCreated, ApiKeyResponse
+from app.db.models import ApiKey, UsageEvent, User, UserQuota
+from app.schemas.admin import (
+    AdminAnalytics, AdminApiKeyCreate, AdminDailyUsage, AdminModelUsage, AdminOverview, AdminRecentUsage,
+    AdminQuotaUpdate, AdminUserQuota, AdminUserUpdate, AdminUserUsage, ApiKeyCreated, ApiKeyResponse,
+)
+from app.services.quota import monthly_tokens
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -47,6 +51,112 @@ async def overview(_: AdminUser, db: DbSession) -> AdminOverview:
         request_count=sum(user.request_count for user in users),
         input_tokens=sum(user.input_tokens for user in users), output_tokens=sum(user.output_tokens for user in users),
         total_tokens=sum(user.total_tokens for user in users), users=users,
+    )
+
+
+@router.get("/analytics", response_model=AdminAnalytics)
+async def analytics(_: AdminUser, db: DbSession, days: int = Query(default=30, ge=1, le=365)) -> AdminAnalytics:
+    start = datetime.now(UTC) - timedelta(days=days)
+    daily_rows = await db.execute(
+        select(
+            func.date(UsageEvent.created_at).label("day"),
+            func.count(UsageEvent.id).label("request_count"),
+            func.coalesce(func.sum(UsageEvent.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageEvent.output_tokens), 0).label("output_tokens"),
+        )
+        .where(UsageEvent.created_at >= start)
+        .group_by(func.date(UsageEvent.created_at))
+        .order_by(func.date(UsageEvent.created_at))
+    )
+    model_rows = await db.execute(
+        select(
+            UsageEvent.model,
+            func.count(UsageEvent.id).label("request_count"),
+            func.coalesce(func.sum(UsageEvent.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageEvent.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.avg(UsageEvent.total_duration_ns), 0).label("average_duration_ns"),
+        )
+        .where(UsageEvent.created_at >= start)
+        .group_by(UsageEvent.model)
+        .order_by(func.sum(UsageEvent.input_tokens + UsageEvent.output_tokens).desc())
+    )
+    recent_rows = await db.execute(
+        select(UsageEvent, User.email)
+        .join(User, User.id == UsageEvent.user_id)
+        .order_by(UsageEvent.created_at.desc())
+        .limit(50)
+    )
+    active_keys = await db.scalar(select(func.count(ApiKey.id)).where(ApiKey.revoked_at.is_(None))) or 0
+    revoked_keys = await db.scalar(select(func.count(ApiKey.id)).where(ApiKey.revoked_at.is_not(None))) or 0
+    return AdminAnalytics(
+        days=days,
+        active_key_count=active_keys,
+        revoked_key_count=revoked_keys,
+        daily=[AdminDailyUsage(**row._mapping) for row in daily_rows],
+        models=[
+            AdminModelUsage(
+                model=row.model, request_count=row.request_count, input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens, total_tokens=row.input_tokens + row.output_tokens,
+                average_duration_ms=round(float(row.average_duration_ns) / 1_000_000, 1),
+            )
+            for row in model_rows
+        ],
+        recent=[
+            AdminRecentUsage(
+                id=event.id, email=email, model=event.model, input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens, total_duration_ns=event.total_duration_ns,
+                status=event.status, created_at=event.created_at,
+            )
+            for event, email in recent_rows
+        ],
+    )
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserUsage)
+async def update_user(user_id: UUID, payload: AdminUserUpdate, admin: AdminUser, db: DbSession) -> AdminUserUsage:
+    if user_id == admin.id and not payload.is_active:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "You cannot disable your own administrator account")
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    target.is_active = payload.is_active
+    await db.commit()
+    users = await user_usage_rows(db)
+    return next(user for user in users if user.id == target.id)
+
+
+@router.get("/quotas", response_model=list[AdminUserQuota])
+async def list_quotas(_: AdminUser, db: DbSession) -> list[AdminUserQuota]:
+    users = await db.scalars(select(User).order_by(User.email))
+    quotas = {quota.user_id: quota for quota in await db.scalars(select(UserQuota))}
+    result: list[AdminUserQuota] = []
+    for user in users:
+        limit = quotas.get(user.id).monthly_token_limit if user.id in quotas else None
+        used = await monthly_tokens(db, user.id)
+        result.append(AdminUserQuota(
+            user_id=user.id, email=user.email, monthly_token_limit=limit, monthly_tokens_used=used,
+            remaining_tokens=max(limit - used, 0) if limit is not None else None,
+        ))
+    return result
+
+
+@router.put("/users/{user_id}/quota", response_model=AdminUserQuota)
+async def set_quota(user_id: UUID, payload: AdminQuotaUpdate, _: AdminUser, db: DbSession) -> AdminUserQuota:
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    quota = await db.get(UserQuota, user_id)
+    if quota is None:
+        quota = UserQuota(user_id=user_id, monthly_token_limit=payload.monthly_token_limit)
+        db.add(quota)
+    else:
+        quota.monthly_token_limit = payload.monthly_token_limit
+    await db.commit()
+    used = await monthly_tokens(db, user_id)
+    return AdminUserQuota(
+        user_id=user.id, email=user.email, monthly_token_limit=payload.monthly_token_limit,
+        monthly_tokens_used=used,
+        remaining_tokens=max(payload.monthly_token_limit - used, 0) if payload.monthly_token_limit else None,
     )
 
 
