@@ -23,4 +23,6 @@ class UserResponse(BaseModel):
     email: EmailStr
     is_admin: bool
     created_at: datetime
+    roles: list[str] = []
 
+    model_config = {"from_attributes": True}

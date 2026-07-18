@@ -4,6 +4,7 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, DbSession
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.models import User
+from app.db.models import UserRole
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -32,6 +33,8 @@ async def login(payload: LoginRequest, db: DbSession) -> TokenResponse:
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(user: CurrentUser) -> User:
-    return user
-
+async def me(user: CurrentUser, db: DbSession) -> UserResponse:
+    roles = set(await db.scalars(select(UserRole.role).where(UserRole.user_id == user.id)))
+    if user.is_admin:
+        roles.add("admin")
+    return UserResponse.model_validate(user).model_copy(update={"roles": sorted(roles) or ["user"]})

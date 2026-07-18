@@ -39,6 +39,14 @@ async def lifespan(app: FastAPI):
                 .where(User.email == settings.bootstrap_admin_email.lower())
                 .values(is_admin=True)
             )
+            await connection.execute(
+                text(
+                    "INSERT INTO user_roles (user_id, role) "
+                    "SELECT id, 'admin' FROM users WHERE email = :email "
+                    "ON CONFLICT (user_id, role) DO NOTHING"
+                ),
+                {"email": settings.bootstrap_admin_email.lower()},
+            )
     yield
     await app.state.ollama.close()
     await app.state.redis.aclose()

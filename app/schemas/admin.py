@@ -99,3 +99,13 @@ class AdminUserQuota(BaseModel):
     monthly_token_limit: int | None
     monthly_tokens_used: int
     remaining_tokens: int | None
+
+
+class AdminRoleUpdate(BaseModel):
+    roles: list[str] = Field(min_length=1, max_length=4)
+
+
+class AdminUserRoles(BaseModel):
+    user_id: UUID
+    email: str
+    roles: list[str]

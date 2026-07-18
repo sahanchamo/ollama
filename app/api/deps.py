@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token, hash_api_key
 from app.db.models import ApiKey, User
+from app.db.models import UserRole
 from app.db.session import get_db
 
 bearer = HTTPBearer(auto_error=False)
@@ -52,3 +53,27 @@ async def require_admin(user: CurrentUser) -> User:
 
 
 AdminUser = Annotated[User, Depends(require_admin)]
+
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "user": set(),
+    "analyst": {"analytics.read"},
+    "operator": {"analytics.read", "keys.manage", "users.manage"},
+    "admin": {"*"},
+}
+
+
+async def roles_for_user(db: AsyncSession, user: User) -> set[str]:
+    roles = set(await db.scalars(select(UserRole.role).where(UserRole.user_id == user.id)))
+    if user.is_admin:
+        roles.add("admin")
+    return roles or {"user"}
+
+
+def require_permission(permission: str):
+    async def permission_dependency(user: CurrentUser, db: DbSession) -> User:
+        roles = await roles_for_user(db, user)
+        permissions = set().union(*(ROLE_PERMISSIONS.get(role, set()) for role in roles))
+        if "*" not in permissions and permission not in permissions:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"Missing required permission: {permission}")
+        return user
+    return permission_dependency

@@ -1,19 +1,23 @@
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import delete, func, select, update
 
-from app.api.deps import AdminUser, DbSession
+from app.api.deps import AdminUser, DbSession, ROLE_PERMISSIONS, require_permission, roles_for_user
 from app.core.security import create_api_key
-from app.db.models import ApiKey, UsageEvent, User, UserQuota
+from app.db.models import ApiKey, UsageEvent, User, UserQuota, UserRole
 from app.schemas.admin import (
     AdminAnalytics, AdminApiKeyCreate, AdminDailyUsage, AdminModelUsage, AdminOverview, AdminRecentUsage,
-    AdminQuotaUpdate, AdminUserQuota, AdminUserUpdate, AdminUserUsage, ApiKeyCreated, ApiKeyResponse,
+    AdminQuotaUpdate, AdminRoleUpdate, AdminUserQuota, AdminUserRoles, AdminUserUpdate, AdminUserUsage, ApiKeyCreated, ApiKeyResponse,
 )
 from app.services.quota import monthly_tokens
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+AnalyticsPrincipal = Annotated[User, Depends(require_permission("analytics.read"))]
+KeyManager = Annotated[User, Depends(require_permission("keys.manage"))]
+UserManager = Annotated[User, Depends(require_permission("users.manage"))]
 
 
 async def user_usage_rows(db: DbSession) -> list[AdminUserUsage]:
@@ -44,7 +48,7 @@ async def user_usage_rows(db: DbSession) -> list[AdminUserUsage]:
 
 
 @router.get("/overview", response_model=AdminOverview)
-async def overview(_: AdminUser, db: DbSession) -> AdminOverview:
+async def overview(_: AnalyticsPrincipal, db: DbSession) -> AdminOverview:
     users = await user_usage_rows(db)
     return AdminOverview(
         user_count=len(users), active_user_count=sum(user.is_active for user in users),
@@ -55,7 +59,7 @@ async def overview(_: AdminUser, db: DbSession) -> AdminOverview:
 
 
 @router.get("/analytics", response_model=AdminAnalytics)
-async def analytics(_: AdminUser, db: DbSession, days: int = Query(default=30, ge=1, le=365)) -> AdminAnalytics:
+async def analytics(_: AnalyticsPrincipal, db: DbSession, days: int = Query(default=30, ge=1, le=365)) -> AdminAnalytics:
     start = datetime.now(UTC) - timedelta(days=days)
     daily_rows = await db.execute(
         select(
@@ -113,7 +117,7 @@ async def analytics(_: AdminUser, db: DbSession, days: int = Query(default=30, g
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserUsage)
-async def update_user(user_id: UUID, payload: AdminUserUpdate, admin: AdminUser, db: DbSession) -> AdminUserUsage:
+async def update_user(user_id: UUID, payload: AdminUserUpdate, admin: UserManager, db: DbSession) -> AdminUserUsage:
     if user_id == admin.id and not payload.is_active:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "You cannot disable your own administrator account")
     target = await db.get(User, user_id)
@@ -126,7 +130,7 @@ async def update_user(user_id: UUID, payload: AdminUserUpdate, admin: AdminUser,
 
 
 @router.get("/quotas", response_model=list[AdminUserQuota])
-async def list_quotas(_: AdminUser, db: DbSession) -> list[AdminUserQuota]:
+async def list_quotas(_: UserManager, db: DbSession) -> list[AdminUserQuota]:
     users = await db.scalars(select(User).order_by(User.email))
     quotas = {quota.user_id: quota for quota in await db.scalars(select(UserQuota))}
     result: list[AdminUserQuota] = []
@@ -141,7 +145,7 @@ async def list_quotas(_: AdminUser, db: DbSession) -> list[AdminUserQuota]:
 
 
 @router.put("/users/{user_id}/quota", response_model=AdminUserQuota)
-async def set_quota(user_id: UUID, payload: AdminQuotaUpdate, _: AdminUser, db: DbSession) -> AdminUserQuota:
+async def set_quota(user_id: UUID, payload: AdminQuotaUpdate, _: UserManager, db: DbSession) -> AdminUserQuota:
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
@@ -161,13 +165,13 @@ async def set_quota(user_id: UUID, payload: AdminQuotaUpdate, _: AdminUser, db: 
 
 
 @router.get("/api-keys", response_model=list[ApiKeyResponse])
-async def list_api_keys(_: AdminUser, db: DbSession) -> list[ApiKey]:
+async def list_api_keys(_: KeyManager, db: DbSession) -> list[ApiKey]:
     result = await db.scalars(select(ApiKey).order_by(ApiKey.created_at.desc()).limit(500))
     return list(result)
 
 
 @router.post("/api-keys", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)
-async def generate_api_key(payload: AdminApiKeyCreate, _: AdminUser, db: DbSession) -> ApiKeyCreated:
+async def generate_api_key(payload: AdminApiKeyCreate, _: KeyManager, db: DbSession) -> ApiKeyCreated:
     owner = await db.get(User, payload.user_id)
     if owner is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Target user not found")
@@ -183,10 +187,37 @@ async def generate_api_key(payload: AdminApiKeyCreate, _: AdminUser, db: DbSessi
 
 
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_api_key(key_id: UUID, _: AdminUser, db: DbSession) -> None:
+async def revoke_api_key(key_id: UUID, _: KeyManager, db: DbSession) -> None:
     result = await db.execute(
         update(ApiKey).where(ApiKey.id == key_id, ApiKey.revoked_at.is_(None)).values(revoked_at=datetime.now(UTC))
     )
     if result.rowcount == 0:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Active API key not found")
     await db.commit()
+
+
+@router.get("/roles", response_model=list[AdminUserRoles])
+async def list_roles(_: AdminUser, db: DbSession) -> list[AdminUserRoles]:
+    users = await db.scalars(select(User).order_by(User.email))
+    return [
+        AdminUserRoles(user_id=user.id, email=user.email, roles=sorted(await roles_for_user(db, user)))
+        for user in users
+    ]
+
+
+@router.put("/users/{user_id}/roles", response_model=AdminUserRoles)
+async def set_roles(user_id: UUID, payload: AdminRoleUpdate, admin: AdminUser, db: DbSession) -> AdminUserRoles:
+    requested = set(payload.roles)
+    unknown = requested.difference(ROLE_PERMISSIONS)
+    if unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Unknown role(s): {', '.join(sorted(unknown))}")
+    if user_id == admin.id and "admin" not in requested:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "You cannot remove your own admin role")
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    await db.execute(delete(UserRole).where(UserRole.user_id == user_id))
+    db.add_all(UserRole(user_id=user_id, role=role) for role in requested)
+    user.is_admin = "admin" in requested
+    await db.commit()
+    return AdminUserRoles(user_id=user.id, email=user.email, roles=sorted(requested))
