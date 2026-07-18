@@ -76,6 +76,37 @@ The original stateless endpoint remains available. Call `POST /api/v1/chat` with
 
 Streaming responses are newline-delimited JSON, directly compatible with Ollama's stream format. Set `stream` to `false` for one JSON response. Fetch available models from `GET /api/v1/chat/models`.
 
+## Usage accounting
+
+Ollama returns prompt and generated-token counts in the final streaming event. The gateway stores those values per user, model, and conversation in `usage_events`. A signed-in user can retrieve their recent events and all-time totals from `GET /api/v1/usage/me`.
+
+## Private RAG knowledge base
+
+The gateway supports per-user document retrieval for `.txt`, `.md`, and text-based `.pdf` documents. Documents are split into chunks, embedded locally with `nomic-embed-text`, stored in PostgreSQL with pgvector, and only the most relevant chunks are supplied to the chat model. The model is instructed to cite the filename and section, and to say when the documents do not contain an answer.
+
+```bash
+docker compose exec ollama ollama pull nomic-embed-text
+```
+
+Use authenticated endpoints:
+
+- `POST /api/v1/knowledge/documents` — multipart form field `file`; uploads and indexes a document.
+- `GET /api/v1/knowledge/documents` — lists the caller's documents.
+- `DELETE /api/v1/knowledge/documents/{id}` — removes a document and its chunks.
+- `POST /api/v1/knowledge/search` — tests retrieval with `{ "query": "..." }`.
+
+The Compose database image includes pgvector. Existing PostgreSQL data is retained when Compose recreates the container, but back it up before infrastructure upgrades.
+
+## Admin and API keys
+
+Set `BOOTSTRAP_ADMIN_EMAIL` in `.env` to an existing registered email, then restart the API. That user becomes an administrator. Administrators can inspect all user token/request totals via `GET /api/v1/admin/overview`, create API keys with `POST /api/v1/admin/api-keys`, and revoke keys with `DELETE /api/v1/admin/api-keys/{id}`.
+
+An API key is shown only once when created. API clients send it on each request:
+
+```text
+X-API-Key: ogw_...
+```
+
 ## Production notes
 
 - Terminate TLS and redirect HTTP to HTTPS; restrict firewall ingress to ports 80/443 and SSH.

@@ -7,12 +7,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from sqlalchemy import text, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes import auth, chat, conversations, health
+from app.api.routes import admin, auth, chat, conversations, health, knowledge, usage
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.db.models import Base
+from app.db.models import Base, User
 from app.db.session import SessionLocal, engine
 from app.services.ollama import OllamaService
 from app.services.rate_limit import RateLimiter
@@ -30,7 +31,14 @@ async def lifespan(app: FastAPI):
     app.state.session_factory = SessionLocal
     # Use Alembic migrations in mature deployments. This bootstrap creates the initial schema.
     async with engine.begin() as connection:
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await connection.run_sync(Base.metadata.create_all)
+        if settings.bootstrap_admin_email:
+            await connection.execute(
+                update(User)
+                .where(User.email == settings.bootstrap_admin_email.lower())
+                .values(is_admin=True)
+            )
     yield
     await app.state.ollama.close()
     await app.state.redis.aclose()
@@ -76,3 +84,6 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix=settings.api_v1_prefix)
 app.include_router(chat.router, prefix=settings.api_v1_prefix)
 app.include_router(conversations.router, prefix=settings.api_v1_prefix)
+app.include_router(usage.router, prefix=settings.api_v1_prefix)
+app.include_router(knowledge.router, prefix=settings.api_v1_prefix)
+app.include_router(admin.router, prefix=settings.api_v1_prefix)

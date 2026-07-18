@@ -15,6 +15,9 @@ Requires-Dist: PyJWT<3,>=2.9
 Requires-Dist: pwdlib[argon2]<1,>=0.2
 Requires-Dist: email-validator<3,>=2.2
 Requires-Dist: structlog<26,>=24.4
+Requires-Dist: pgvector<1,>=0.3
+Requires-Dist: pypdf<7,>=5
+Requires-Dist: python-multipart<1,>=0.0.9
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8; extra == "dev"
 Requires-Dist: pytest-asyncio<1,>=0.24; extra == "dev"

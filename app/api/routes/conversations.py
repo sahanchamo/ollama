@@ -9,7 +9,7 @@ from sqlalchemy import desc, func, select
 
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import get_settings
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, UsageEvent
 from app.db.session import SessionLocal
 from app.schemas.chat import (
     ChatMessage,
@@ -22,6 +22,7 @@ from app.schemas.chat import (
     SendMessageRequest,
 )
 from app.services.rate_limit import limit_request
+from app.services.rag import build_rag_instruction, retrieve_context
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -99,21 +100,36 @@ async def delete_conversation(conversation_id: UUID, user: CurrentUser, db: DbSe
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-async def persist_assistant_message(conversation_id: UUID, content: str, message_status: str) -> None:
+async def persist_assistant_message(
+    conversation_id: UUID, user_id: UUID, model: str, content: str, message_status: str, metrics: dict[str, int]
+) -> None:
     """The streaming response outlives the request dependency, so use a fresh DB session."""
     async with SessionLocal() as db:
         db.add(Message(conversation_id=conversation_id, role="assistant", content=content, status=message_status))
         conversation = await db.get(Conversation, conversation_id)
         if conversation:
             conversation.updated_at = func.now()
+        db.add(
+            UsageEvent(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                model=model,
+                input_tokens=metrics.get("prompt_eval_count", 0),
+                output_tokens=metrics.get("eval_count", 0),
+                total_duration_ns=metrics.get("total_duration", 0),
+                load_duration_ns=metrics.get("load_duration", 0),
+                status=message_status,
+            )
+        )
         await db.commit()
 
 
 async def persist_stream(
-    request: Request, ollama_request: ChatRequest, conversation_id: UUID
+    request: Request, ollama_request: ChatRequest, conversation_id: UUID, user_id: UUID
 ) -> AsyncIterator[bytes]:
     answer: list[str] = []
     completed = False
+    metrics: dict[str, int] = {}
     buffered = bytearray()
     try:
         async for chunk in request.app.state.ollama.stream_chat(ollama_request):
@@ -125,6 +141,11 @@ async def persist_stream(
                     event = json.loads(line)
                     answer.append(event.get("message", {}).get("content", ""))
                     completed = completed or bool(event.get("done"))
+                    if event.get("done"):
+                        metrics = {
+                            key: int(event.get(key, 0))
+                            for key in ("prompt_eval_count", "eval_count", "total_duration", "load_duration")
+                        }
                 except json.JSONDecodeError:
                     pass
             yield chunk
@@ -132,7 +153,9 @@ async def persist_stream(
         # The frontend receives a final stream event instead of an opaque proxy failure.
         yield b'{"error":"Model service unavailable","done":true}\n'
     finally:
-        await persist_assistant_message(conversation_id, "".join(answer), "complete" if completed else "interrupted")
+        await persist_assistant_message(
+            conversation_id, user_id, ollama_request.model, "".join(answer), "complete" if completed else "interrupted", metrics
+        )
 
 
 @router.post("/{conversation_id}/messages", response_class=StreamingResponse)
@@ -159,11 +182,18 @@ async def send_message(
         select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at)
     )
     messages = [ChatMessage(role=message.role, content=message.content) for message in previous]
+    try:
+        context = await retrieve_context(db, request.app.state.ollama, user.id, payload.content)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Knowledge retrieval unavailable: {exc}") from exc
+    rag_instruction = build_rag_instruction(context)
+    if rag_instruction:
+        messages.insert(0, ChatMessage(role="system", content=rag_instruction))
     ollama_request = ChatRequest(
         model=conversation.model, messages=messages, temperature=payload.temperature, stream=True
     )
     return StreamingResponse(
-        persist_stream(request, ollama_request, conversation.id),
+        persist_stream(request, ollama_request, conversation.id, user.id),
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",

@@ -6,7 +6,10 @@ app/api/deps.py
 app/api/routes/__init__.py
 app/api/routes/auth.py
 app/api/routes/chat.py
+app/api/routes/conversations.py
 app/api/routes/health.py
+app/api/routes/knowledge.py
+app/api/routes/usage.py
 app/core/config.py
 app/core/logging.py
 app/core/security.py
@@ -14,7 +17,10 @@ app/db/models.py
 app/db/session.py
 app/schemas/auth.py
 app/schemas/chat.py
+app/schemas/rag.py
+app/schemas/usage.py
 app/services/ollama.py
+app/services/rag.py
 app/services/rate_limit.py
 ollama_gateway.egg-info/PKG-INFO
 ollama_gateway.egg-info/SOURCES.txt

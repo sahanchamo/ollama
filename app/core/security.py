@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+import hashlib
+import secrets
 
 import jwt
 from fastapi import HTTPException, status
@@ -34,3 +36,11 @@ def decode_access_token(token: str) -> str:
     except (jwt.PyJWTError, ValueError) as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token") from exc
 
+
+def create_api_key() -> tuple[str, str, str]:
+    secret = f"ogw_{secrets.token_urlsafe(32)}"
+    return secret, secret[:12], hashlib.sha256(secret.encode()).hexdigest()
+
+
+def hash_api_key(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()

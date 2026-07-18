@@ -29,6 +29,22 @@ class OllamaService:
         response.raise_for_status()
         return response.json()
 
+    async def embed(self, inputs: list[str]) -> list[list[float]]:
+        settings = get_settings()
+        response = await self.client.post(
+            "/api/embed",
+            json={"model": settings.rag_embedding_model, "input": inputs, "truncate": True},
+        )
+        response.raise_for_status()
+        embeddings = response.json().get("embeddings", [])
+        if len(embeddings) != len(inputs):
+            raise RuntimeError("Embedding service returned an unexpected number of vectors")
+        if any(len(vector) != settings.rag_embedding_dimensions for vector in embeddings):
+            raise RuntimeError(
+                f"Embedding dimensions do not match RAG_EMBEDDING_DIMENSIONS={settings.rag_embedding_dimensions}"
+            )
+        return embeddings
+
     async def chat(self, request: ChatRequest) -> dict:
         payload = request.model_dump(exclude={"stream"}) | {"stream": False}
         response = await self.client.post("/api/chat", json=payload)
@@ -42,4 +58,3 @@ class OllamaService:
             async for chunk in response.aiter_bytes():
                 if chunk:
                     yield chunk
-

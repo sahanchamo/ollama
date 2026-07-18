@@ -21,9 +21,16 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default=30, ge=1, le=1000)
     max_prompt_chars: int = Field(default=20000, ge=100, le=200000)
     log_level: str = "INFO"
+    rag_enabled: bool = True
+    rag_embedding_model: str = "nomic-embed-text"
+    rag_embedding_dimensions: int = Field(default=768, ge=64, le=4096)
+    rag_top_k: int = Field(default=4, ge=1, le=12)
+    rag_chunk_size: int = Field(default=1200, ge=200, le=5000)
+    rag_chunk_overlap: int = Field(default=200, ge=0, le=1000)
+    rag_max_upload_bytes: int = Field(default=10_485_760, ge=1024, le=104_857_600)
+    bootstrap_admin_email: str | None = None
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
