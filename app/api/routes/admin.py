@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, select, update
 
 from app.api.deps import AdminUser, DbSession, ROLE_PERMISSIONS, require_permission, roles_for_user
-from app.core.security import create_api_key
+from app.core.security import create_api_key, hash_password
 from app.db.models import ApiKey, UsageEvent, User, UserQuota, UserRole
 from app.schemas.admin import (
     AdminAnalytics, AdminApiKeyCreate, AdminDailyUsage, AdminModelUsage, AdminOverview, AdminRecentUsage,
-    AdminQuotaUpdate, AdminRoleUpdate, AdminUserQuota, AdminUserRoles, AdminUserUpdate, AdminUserUsage, ApiKeyCreated, ApiKeyResponse,
+    AdminQuotaUpdate, AdminRoleUpdate, AdminUserCreate, AdminUserQuota, AdminUserRoles, AdminUserUpdate, AdminUserUsage, ApiKeyCreated, ApiKeyResponse,
 )
 from app.services.quota import monthly_tokens
 
@@ -127,6 +127,21 @@ async def update_user(user_id: UUID, payload: AdminUserUpdate, admin: UserManage
     await db.commit()
     users = await user_usage_rows(db)
     return next(user for user in users if user.id == target.id)
+
+
+@router.post("/users", response_model=AdminUserUsage, status_code=status.HTTP_201_CREATED)
+async def create_user(payload: AdminUserCreate, _: UserManager, db: DbSession) -> AdminUserUsage:
+    email = payload.email.lower()
+    if await db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Email is already registered")
+    user = User(email=email, password_hash=hash_password(payload.password), is_active=True, is_admin=False)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return AdminUserUsage(
+        id=user.id, email=user.email, is_active=user.is_active, is_admin=user.is_admin,
+        input_tokens=0, output_tokens=0, total_tokens=0, request_count=0, last_activity=None,
+    )
 
 
 @router.get("/quotas", response_model=list[AdminUserQuota])

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class AdminApiKeyCreate(BaseModel):
@@ -87,6 +87,11 @@ class AdminAnalytics(BaseModel):
 
 class AdminUserUpdate(BaseModel):
     is_active: bool
+
+
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=12, max_length=128)
 
 
 class AdminQuotaUpdate(BaseModel):
