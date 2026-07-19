@@ -94,6 +94,10 @@ class AdminUserCreate(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class AdminPasswordReset(BaseModel):
+    password: str = Field(min_length=12, max_length=128)
+
+
 class AdminQuotaUpdate(BaseModel):
     monthly_token_limit: int | None = Field(default=None, ge=1_000, le=100_000_000)
 
